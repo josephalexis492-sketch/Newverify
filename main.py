@@ -1,117 +1,83 @@
 import asyncio
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ChatPermissions,
-)
+from telegram import Update, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
+    ChatMemberHandler,
 )
 
-# =========================
-# 🔥 PASTE YOUR TOKEN HERE
-# =========================
 BOT_TOKEN = "8237376549:AAHA_xlxX6e4FLqvnwoOi_zgzi10t_mFUFM"
 
-VERIFY_TIMEOUT = 60  # seconds
+verification_timeout = 60
 pending_users = {}
 
 
-# When new member joins
+async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id, user_id):
+    await context.bot.restrict_chat_member(
+        chat_id=chat_id,
+        user_id=user_id,
+        permissions=ChatPermissions(can_send_messages=False),
+    )
+
+
+async def unrestrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id, user_id):
+    await context.bot.restrict_chat_member(
+        chat_id=chat_id,
+        user_id=user_id,
+        permissions=ChatPermissions(
+            can_send_messages=True,
+            can_send_media_messages=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True,
+        ),
+    )
+
+
+async def kick_user(context: ContextTypes.DEFAULT_TYPE, chat_id, user_id):
+    await context.bot.ban_chat_member(chat_id, user_id)
+    await context.bot.unban_chat_member(chat_id, user_id)
+
+
 async def new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
-        user_id = member.id
         chat_id = update.effective_chat.id
+        user_id = member.id
 
-        # Mute user
-        await context.bot.restrict_chat_member(
-            chat_id,
-            user_id,
-            permissions=ChatPermissions(can_send_messages=False)
+        await restrict_user(context, chat_id, user_id)
+
+        pending_users[user_id] = chat_id
+
+        await update.message.reply_text(
+            f"{member.first_name}, verify in 60 seconds using /verify or you will be kicked."
         )
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Verify", callback_data=f"verify_{user_id}")]
-        ])
+        await asyncio.sleep(verification_timeout)
 
-        msg = await update.message.reply_text(
-            f"👋 Welcome {member.mention_html()}!\n"
-            f"Click verify within {VERIFY_TIMEOUT} seconds or you will be kicked.",
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
-
-        pending_users[user_id] = {
-            "chat_id": chat_id,
-            "message_id": msg.message_id
-        }
-
-        asyncio.create_task(timeout_kick(context, user_id))
+        if user_id in pending_users:
+            await kick_user(context, chat_id, user_id)
+            del pending_users[user_id]
 
 
-# Kick if not verified
-async def timeout_kick(context, user_id):
-    await asyncio.sleep(VERIFY_TIMEOUT)
+async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
     if user_id in pending_users:
-        chat_id = pending_users[user_id]["chat_id"]
-
-        try:
-            await context.bot.ban_chat_member(chat_id, user_id)
-            await context.bot.unban_chat_member(chat_id, user_id)
-        except:
-            pass
-
+        chat_id = pending_users[user_id]
+        await unrestrict_user(context, chat_id, user_id)
         del pending_users[user_id]
-
-
-# Verify button
-async def verify_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-
-    if query.data != f"verify_{user_id}":
-        await query.answer("This is not your button!", show_alert=True)
-        return
-
-    if user_id in pending_users:
-        chat_id = pending_users[user_id]["chat_id"]
-
-        await context.bot.restrict_chat_member(
-            chat_id,
-            user_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
-        )
-
-        await query.edit_message_text("✅ You are verified!")
-        del pending_users[user_id]
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Verifier Bot Running")
+        await update.message.reply_text("You are verified!")
+    else:
+        await update.message.reply_text("You are already verified.")
 
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member))
-    app.add_handler(CallbackQueryHandler(verify_button))
+    app.add_handler(ChatMemberHandler(new_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(CommandHandler("verify", verify))
 
-    print("🚀 Bot Started")
+    print("Bot running...")
     app.run_polling()
 
 
